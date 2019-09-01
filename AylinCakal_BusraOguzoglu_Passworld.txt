@@ -1,0 +1,690 @@
+
+//TOP MODULE
+module top(input logic echo,
+           input logic i1,
+           input logic i0,
+           input logic clk,//clock
+           input logic button_n, //stop button
+           input logic reset_n, //reset button
+           output logic trig,
+           output logic [6:0] segment, // seven segment display
+           output logic enable_D1,//right most digit
+           output logic enable_D2,//second right most digit
+           output logic enable_D3,//second left most digit
+           output logic enable_D4,//left most digit
+           output logic dp //decimal point
+);
+
+logic clk_point1hz; //counter clock
+logic refreshClk; ////refresh the display
+logic [3:0] hex; //hexadecimal number
+logic [3:0] reg_d0; //count for right most digit
+logic [3:0] reg_d1; //count for second right most digit
+logic [3:0] reg_d2; //count for second left most digit
+logic [3:0] reg_d3; //count for left most digit isUnlocked;
+logic isUnlocked;
+logic Detected;
+
+//instantiate the clock 
+ClockGenerate Uclkgen(
+.clk(clk),
+.refreshClk(refreshClk),
+.clk_point1hz(clk_point1hz)
+);
+
+//instantiate enable_sr
+enable_sr Uenable(
+.refreshClk(refreshClk),
+.enable_D1(enable_D1),
+.enable_D2(enable_D2),
+.enable_D3(enable_D3),
+.enable_D4(enable_D4)
+);
+
+//Instantiate FSM
+FSM dut(i1,i0,clk_point1hz,reset_n,isUnlocked);
+
+//Instantiate Ultrasonic
+Ultrasonic sdut(echo, clk, trig, Detected);
+
+//instantiate counter
+Counter Ucounter(
+.button_n(button_n),
+.reset_n(reset_n),
+.isUnlocked(isUnlocked),
+.Detected(Detected),
+.clk_point1hz(clk_point1hz),
+.reg_d0(reg_d0),
+.reg_d1(reg_d1),
+.reg_d2(reg_d2),
+.reg_d3(reg_d3)
+);
+
+//instantiate SegmentDisplay 
+SegmentDisplay Ussd(
+.hex(hex),
+.segment(segment),
+.dp(dp)
+);
+
+//use case statement to assign hexadecimal to each digit
+//condition is which digit is on
+
+always @ (*)
+
+case ({enable_D1,enable_D2,enable_D3,enable_D4})
+    4'b0111: hex = reg_d0;
+    4'b1011: hex = reg_d1;
+    4'b1101: hex = reg_d2;
+    4'b1110: hex = reg_d3;
+    default: hex = 0; 
+endcase 
+
+endmodule
+
+//CLOCKGENERATE MODULE
+module ClockGenerate(input logic clk,  // master clock 
+                     output logic  refreshClk,  //refresh the display
+                     output logic  clk_point1hz //counter clock
+);
+
+logic [26:0] count = 0;  // counter register variable
+logic [16:0] refresh = 0; // refresh counter register variable
+
+
+logic tmp_clk = 0; // temporary clock register variable
+logic rclk = 0; // temporary refresh clock register variable
+
+
+assign clk_point1hz = tmp_clk;// 0.5Hz clock
+assign refreshClk = rclk; //refresh clock
+
+
+BUFG clock_buf_0(  //buffered clock to reduce the clock skew
+  .I(clk),
+  .O(clk_100mhz)
+);
+
+// use two always block to generate the clock. 
+// when postive edge of master clock, both always block will be evaluated immediately
+// Use non-block assignment in the block
+
+
+always @(posedge clk_100mhz) begin // use for loop to generate the tmp_clk. tmp_clk*count = master clock
+  if (count < 10000000) begin //10,000,000 is within the refresh vector range 2^27 
+    count <= count + 1; // count up
+  end
+  else begin
+    tmp_clk <= ~tmp_clk; // flip the signal when count reaches 250,000. 
+    count <= 0; // reset the counter
+  end
+end
+
+always @(posedge clk_100mhz) begin // use for loop to generate the rclk. rclk*refresh = master clock
+	if (refresh < 100000) begin //100,000 is within the refresh vector range 2^17
+		refresh <= refresh + 1; // count up
+	end else begin
+		refresh <= 0; // reset the refresh counter
+		rclk <= ~rclk; // flip the signal when count reaches 10,000.
+	end
+end
+
+endmodule
+
+module enable_sr(input logic   refreshClk, //input clock 
+                 output logic  enable_D1, //right most digit
+                 output logic  enable_D2, //second right most digit
+                 output logic  enable_D3, //second left most digit
+                 output logic  enable_D4  //left most digit
+);
+
+//pattern vector variable. each vector represent one digit
+//assign the pattern to 0111 so that only right most digit is asserted (active low)
+logic [3:0] pattern = 4'b0111; 
+
+assign enable_D1 = pattern[3]; //assign right most digit to 0 so turn on the right most 
+assign enable_D2 = pattern[2]; //assign second right most digit to 1, off
+assign enable_D3 = pattern[1]; //assign second left most digit to 1, off
+assign enable_D4 = pattern[0]; //assign left most digit to 1, off
+
+always @(posedge refreshClk)
+    begin
+    pattern <= {pattern[0],pattern[3:1]}; //shift the vector to enable each digit
+    end
+    
+endmodule
+
+module FSM(input logic i1, i0, clk, rst, output logic Y );
+
+typedef enum logic [2:0] {S5, S4, S3, S2, S1, S0} statetype;
+statetype state, nextstate;
+
+logic reset,b0,b1;
+//button b_reset(clk,rst,reset);
+Buttons b_0(clk, i0, b0);
+Buttons b_1(clk, i1, b1);
+
+//State register
+always_ff@(posedge clk) 
+if(rst) 
+state <= S0;
+else
+state <= nextstate;
+
+//next state logic
+always_comb
+case(state)
+S0:  begin 
+     if(b0) nextstate = S0; 
+     else if(b1) nextstate = S1;
+     else nextstate = S0;
+     end
+S1:  begin 
+     if(b0) nextstate = S2; 
+     else if(b1) nextstate = S1;
+     else nextstate = S1;
+     end
+S2: begin 
+     if(b0) nextstate = S0; 
+     else if(b1) nextstate = S3;
+     else nextstate = S2;
+     end
+S3: begin 
+    if(b0) nextstate = S4; 
+    else if(b1) nextstate = S1;
+    else nextstate = S3;
+    end
+S4: begin 
+    if(b0) nextstate = S5; 
+    else if(b1) nextstate = S3;
+    else nextstate = S4;
+   end    
+S5: begin 
+    if(b0) nextstate = S0; 
+    else if(b1) nextstate = S1;
+    else nextstate = S5;
+    end    
+default:   nextstate = S0;
+endcase 
+
+//output logic
+
+always_ff@(posedge clk)
+case(state)
+S0: Y = 0;
+S1: Y = 0; 
+S2: Y = 0;
+S3: Y = 0;
+S4: Y = 0;
+S5: Y = 1;
+endcase
+
+endmodule    
+
+  
+module Buttons(input logic clk,in,
+               output logic out);
+               
+// button -- push button synchronizer and level-to-pulse converter
+// OUT goes high for one cycle of CLK whenever IN makes a
+// low-to-high transition.
+
+logic r1,r2,r3;
+
+always @ (posedge clk)
+    begin
+        r1 <= in; // first reg in synchronizer
+        r2 <= r1; // second reg in synchronizer, output is in sync!
+        r3 <= r2; // remembers previous state of button
+    end
+    
+// rising edge = old value is 0, new value is 1
+assign out = ~r3 & r2;
+
+endmodule
+  
+module Ultrasonic(input logic echo, clk, output logic trig, Detected);
+
+// this module will run continuously
+// will make measurement every 100ms
+
+int counter = 0; //to use finding the distance
+int distance;
+
+logic clk_out;
+int mycounter = 0; // to measure the period
+
+//Use 40 HZ (the speed of the ultrasonic sensor) clk means clk_out from ClockDivider Module 
+ClockDivider clkdiv(clk_out, clk ,0);		
+
+always_ff@(posedge clk_out)
+ 
+begin
+    if (mycounter >= 100000)			//100000 us=100 ms , measurement period
+	   begin
+       counter <= 0;
+       mycounter <= 0;
+       // Detected <= 0; wrong
+       end    
+    
+    else
+       mycounter <= mycounter + 1;
+
+    if (mycounter < 10)	
+        trig <= 1;
+    else
+        trig <= 0;
+
+    if (echo == 1)
+	   counter <= counter + 1;
+
+    if (echo == 0)	//echo gone to low, echo time is counted
+	   begin
+	       if (counter>0)
+	           begin		
+                  distance <= ((counter)*340)/2;		//convert to micrometer
+			         if(distance <= 1000000)		//compare with 1meter
+                        Detected <= 1;		//if closer then startcount pulse is high
+	                 else
+                        Detected <= 0;		//if closer then startcount pulse is low
+               end
+       end
+end	
+
+endmodule
+
+module ClockDivider(output logic clkout, input logic basysClk, input logic reset);
+ 
+    logic [24:0] counter, nextCounter;    
+    
+    always_ff@(posedge basysClk)	//assume 50MHz
+    begin
+        if(reset)
+            counter <= 0;	
+        else
+            counter <= nextCounter;	//if not reset, latch to the next counter value
+    end    
+    
+    always_comb
+    begin
+        if(basysClk == 1)		//when clock is in high state, keep the output value same
+            nextCounter = counter;
+        
+        else
+            begin
+                if (counter >= 49)		//  to give 1 clock out in every 1us (49 = 0 x 31)
+	               nextCounter = 0;
+                else
+                   nextCounter = counter + 1;	// otherwise prepare the next count value
+            end
+    end   
+     
+    assign clkout = counter[5];    	// set when counter = 32, reset when counter = 0 (means 50)
+
+endmodule
+
+module Counter(input logic button_n, //start and stop button. Count only start when this button is pressed. Press again becomes stop. Resume back to count if pressed after stop
+               input logic reset_n,
+               input logic isUnlocked,
+               input logic Detected,
+               //reset button 
+               input logic clk_point1hz,  //input counter clock from ClockGenerate 
+               output logic [3:0] reg_d0, //count for right most digit
+               output logic [3:0] reg_d1, //count for 2nd right most digit
+               output logic [3:0] reg_d2, //count for 2nd left most digit
+               output logic [3:0] reg_d3  //count for left most digit
+);
+
+always @ (posedge clk_point1hz) // look for the edge of the button. Use active low logic
+    begin
+        if(Detected) // If the ultrasonic module detects the object...
+            begin
+                if (isUnlocked) //to show [OPEN]
+                    begin
+                         reg_d1 <= 4;  
+                         reg_d0 <= 5;
+                         reg_d3 <= 3;
+                         reg_d2 <= 0;
+                    end
+                else // to show [PASS] 
+            begin
+                reg_d1 <= 2;  
+                reg_d0 <= 2;
+                reg_d3 <= 0;
+                reg_d2 <= 1;
+            end
+        end
+    
+    //If the ultrasonic module does not detect the object...    
+    else //to show [----]
+        begin
+              reg_d1 <= 9;  
+              reg_d0 <= 9;
+              reg_d3 <= 9;
+              reg_d2 <= 9;
+        end
+    end
+    
+endmodule
+
+module SegmentDisplay(
+	  input logic [3:0] hex, //hexadecimal number, 2^4=16 from 0 to F. Other use until 9
+      output logic [6:0] segment, // 7 segment output
+      output logic dp //decimal point
+);
+
+//active low logic to turn on the segment
+//use case statement to represent each hexadecimal number
+always @ (*)
+   case (hex) 
+		   0: segment = 7'b0011000; // 0 - P
+           1: segment = 7'b0001000; // 1 - A
+           2: segment = 7'b0100100; // 2 - S
+           3: segment = 7'b0000001; // 3 - O 
+           4: segment = 7'b0110000; // 4 - E 
+           5: segment = 7'b0001001; // 5 - n
+           6: segment = 7'b0100000; 
+           7: segment = 7'b0001101;
+           8: segment = 7'b0000000;
+           9: segment = 7'b1111110; // 9 - "-" to sign "empty"
+     default: segment = 7'b0000001; //default is 0 
+   endcase	
+   
+assign dp = 4'b1111; //turn off the decimal point as we don't need it
+    
+endmodule
+
+## This file is a general .xdc for the Basys3 rev B board
+## To use it in a project:
+## - uncomment the lines corresponding to used pins
+## - rename the used ports (in each line, after get_ports) according to the top level signal names in the project
+
+## Clock signal
+set_property PACKAGE_PIN W5 [get_ports clk]							
+	set_property IOSTANDARD LVCMOS33 [get_ports clk]
+	create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports clk]
+ 
+## Switches
+set_property PACKAGE_PIN V17 [get_ports {reset_n}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {reset_n}]
+#set_property PACKAGE_PIN V16 [get_ports {sw[1]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[1]}]
+#set_property PACKAGE_PIN W16 [get_ports {sw[2]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[2]}]
+#set_property PACKAGE_PIN W17 [get_ports {sw[3]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[3]}]
+#set_property PACKAGE_PIN W15 [get_ports {sw[4]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[4]}]
+#set_property PACKAGE_PIN V15 [get_ports {sw[5]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[5]}]
+#set_property PACKAGE_PIN W14 [get_ports {sw[6]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[6]}]
+#set_property PACKAGE_PIN W13 [get_ports {sw[7]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[7]}]
+#set_property PACKAGE_PIN V2 [get_ports {sw[8]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[8]}]
+#set_property PACKAGE_PIN T3 [get_ports {sw[9]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[9]}]
+#set_property PACKAGE_PIN T2 [get_ports {sw[10]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[10]}]
+#set_property PACKAGE_PIN R3 [get_ports {sw[11]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[11]}]
+#set_property PACKAGE_PIN W2 [get_ports {sw[12]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[12]}]
+#set_property PACKAGE_PIN U1 [get_ports {sw[13]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[13]}]
+#set_property PACKAGE_PIN T1 [get_ports {sw[14]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[14]}]
+#set_property PACKAGE_PIN R2 [get_ports {sw[15]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {sw[15]}]
+ 
+
+## LEDs
+#set_property PACKAGE_PIN U16 [get_ports {Y}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {Y}]
+#set_property PACKAGE_PIN E19 [get_ports {led[1]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[1]}]
+#set_property PACKAGE_PIN U19 [get_ports {led[2]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[2]}]
+#set_property PACKAGE_PIN V19 [get_ports {led[3]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[3]}]
+#set_property PACKAGE_PIN W18 [get_ports {led[4]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[4]}]
+#set_property PACKAGE_PIN U15 [get_ports {led[5]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[5]}]
+#set_property PACKAGE_PIN U14 [get_ports {led[6]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[6]}]
+#set_property PACKAGE_PIN V14 [get_ports {led[7]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[7]}]
+#set_property PACKAGE_PIN V13 [get_ports {led[8]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[8]}]
+#set_property PACKAGE_PIN V3 [get_ports {led[9]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[9]}]
+#set_property PACKAGE_PIN W3 [get_ports {led[10]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[10]}]
+#set_property PACKAGE_PIN U3 [get_ports {led[11]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[11]}]
+#set_property PACKAGE_PIN P3 [get_ports {led[12]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[12]}]
+#set_property PACKAGE_PIN N3 [get_ports {led[13]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[13]}]
+#set_property PACKAGE_PIN P1 [get_ports {led[14]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[14]}]
+#set_property PACKAGE_PIN L1 [get_ports {led[15]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {led[15]}]
+	
+	
+##7 segment display
+set_property PACKAGE_PIN W7 [get_ports {segment[6]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[6]}]
+set_property PACKAGE_PIN W6 [get_ports {segment[5]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[5]}]
+set_property PACKAGE_PIN U8 [get_ports {segment[4]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[4]}]
+set_property PACKAGE_PIN V8 [get_ports {segment[3]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[3]}]
+set_property PACKAGE_PIN U5 [get_ports {segment[2]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[2]}]
+set_property PACKAGE_PIN V5 [get_ports {segment[1]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[1]}]
+set_property PACKAGE_PIN U7 [get_ports {segment[0]}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {segment[0]}]
+
+set_property PACKAGE_PIN V7 [get_ports dp]							
+	set_property IOSTANDARD LVCMOS33 [get_ports dp]
+
+set_property PACKAGE_PIN U2 [get_ports {enable_D1}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {enable_D1}]
+set_property PACKAGE_PIN U4 [get_ports {enable_D2}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {enable_D2}]
+set_property PACKAGE_PIN V4 [get_ports {enable_D3}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {enable_D3}]
+set_property PACKAGE_PIN W4 [get_ports {enable_D4}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {enable_D4}]
+
+
+##Buttons
+set_property PACKAGE_PIN U18 [get_ports reset_n]						
+	set_property IOSTANDARD LVCMOS33 [get_ports reset_n]
+set_property PACKAGE_PIN T18 [get_ports button_n]						
+	set_property IOSTANDARD LVCMOS33 [get_ports button_n]
+set_property PACKAGE_PIN W19 [get_ports i0]						
+	set_property IOSTANDARD LVCMOS33 [get_ports i0]
+set_property PACKAGE_PIN T17 [get_ports i1]						
+	set_property IOSTANDARD LVCMOS33 [get_ports i1]
+#set_property PACKAGE_PIN U17 [get_ports btnD]						
+	#set_property IOSTANDARD LVCMOS33 [get_ports btnD]
+ 
+
+
+##Pmod Header JA
+##Sch name = JA1
+#set_property PACKAGE_PIN J1 [get_ports {JA[0]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[0]}]
+##Sch name = JA2
+#set_property PACKAGE_PIN L2 [get_ports {JA[1]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[1]}]
+##Sch name = JA3
+#set_property PACKAGE_PIN J2 [get_ports {JA[2]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[2]}]
+##Sch name = JA4
+#set_property PACKAGE_PIN G2 [get_ports {JA[3]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[3]}]
+##Sch name = JA7
+#set_property PACKAGE_PIN H1 [get_ports {JA[4]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[4]}]
+##Sch name = JA8
+#set_property PACKAGE_PIN K2 [get_ports {JA[5]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[5]}]
+##Sch name = JA9
+#set_property PACKAGE_PIN H2 [get_ports {JA[6]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[6]}]
+##Sch name = JA10
+#set_property PACKAGE_PIN G3 [get_ports {JA[7]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JA[7]}]
+
+
+
+##Pmod Header JB
+##Sch name = JB1
+set_property PACKAGE_PIN A14 [get_ports {echo}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {echo}]
+#Sch name = JB2
+set_property PACKAGE_PIN A16 [get_ports {trig}]					
+	set_property IOSTANDARD LVCMOS33 [get_ports {trig}]
+##Sch name = JB3
+#set_property PACKAGE_PIN B15 [get_ports {JB[2]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[2]}]
+##Sch name = JB4
+#set_property PACKAGE_PIN B16 [get_ports {JB[3]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[3]}]
+##Sch name = JB7
+#set_property PACKAGE_PIN A15 [get_ports {JB[4]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[4]}]
+##Sch name = JB8
+#set_property PACKAGE_PIN A17 [get_ports {JB[5]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[5]}]
+##Sch name = JB9
+#set_property PACKAGE_PIN C15 [get_ports {JB[6]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[6]}]
+##Sch name = JB10 
+#set_property PACKAGE_PIN C16 [get_ports {JB[7]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JB[7]}]
+ 
+
+
+##Pmod Header JC
+##Sch name = JC1
+#set_property PACKAGE_PIN K17 [get_ports {JC[0]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[0]}]
+##Sch name = JC2
+#set_property PACKAGE_PIN M18 [get_ports {JC[1]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[1]}]
+##Sch name = JC3
+#set_property PACKAGE_PIN N17 [get_ports {JC[2]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[2]}]
+##Sch name = JC4
+#set_property PACKAGE_PIN P18 [get_ports {JC[3]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[3]}]
+##Sch name = JC7
+#set_property PACKAGE_PIN L17 [get_ports {JC[4]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[4]}]
+##Sch name = JC8
+#set_property PACKAGE_PIN M19 [get_ports {JC[5]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[5]}]
+##Sch name = JC9
+#set_property PACKAGE_PIN P17 [get_ports {JC[6]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[6]}]
+##Sch name = JC10
+#set_property PACKAGE_PIN R18 [get_ports {JC[7]}]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JC[7]}]
+
+
+##Pmod Header JXADC
+##Sch name = XA1_P
+#set_property PACKAGE_PIN J3 [get_ports {JXADC[0]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[0]}]
+##Sch name = XA2_P
+#set_property PACKAGE_PIN L3 [get_ports {JXADC[1]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[1]}]
+##Sch name = XA3_P
+#set_property PACKAGE_PIN M2 [get_ports {JXADC[2]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[2]}]
+##Sch name = XA4_P
+#set_property PACKAGE_PIN N2 [get_ports {JXADC[3]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[3]}]
+##Sch name = XA1_N
+#set_property PACKAGE_PIN K3 [get_ports {JXADC[4]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[4]}]
+##Sch name = XA2_N
+#set_property PACKAGE_PIN M3 [get_ports {JXADC[5]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[5]}]
+##Sch name = XA3_N
+#set_property PACKAGE_PIN M1 [get_ports {JXADC[6]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[6]}]
+##Sch name = XA4_N
+#set_property PACKAGE_PIN N1 [get_ports {JXADC[7]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {JXADC[7]}]
+
+
+
+##VGA Connector
+#set_property PACKAGE_PIN G19 [get_ports {vgaRed[0]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaRed[0]}]
+#set_property PACKAGE_PIN H19 [get_ports {vgaRed[1]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaRed[1]}]
+#set_property PACKAGE_PIN J19 [get_ports {vgaRed[2]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaRed[2]}]
+#set_property PACKAGE_PIN N19 [get_ports {vgaRed[3]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaRed[3]}]
+#set_property PACKAGE_PIN N18 [get_ports {vgaBlue[0]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaBlue[0]}]
+#set_property PACKAGE_PIN L18 [get_ports {vgaBlue[1]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaBlue[1]}]
+#set_property PACKAGE_PIN K18 [get_ports {vgaBlue[2]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaBlue[2]}]
+#set_property PACKAGE_PIN J18 [get_ports {vgaBlue[3]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaBlue[3]}]
+#set_property PACKAGE_PIN J17 [get_ports {vgaGreen[0]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaGreen[0]}]
+#set_property PACKAGE_PIN H17 [get_ports {vgaGreen[1]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaGreen[1]}]
+#set_property PACKAGE_PIN G17 [get_ports {vgaGreen[2]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaGreen[2]}]
+#set_property PACKAGE_PIN D17 [get_ports {vgaGreen[3]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {vgaGreen[3]}]
+#set_property PACKAGE_PIN P19 [get_ports Hsync]						
+	#set_property IOSTANDARD LVCMOS33 [get_ports Hsync]
+#set_property PACKAGE_PIN R19 [get_ports Vsync]						
+	#set_property IOSTANDARD LVCMOS33 [get_ports Vsync]
+
+
+##USB-RS232 Interface
+#set_property PACKAGE_PIN B18 [get_ports RsRx]						
+	#set_property IOSTANDARD LVCMOS33 [get_ports RsRx]
+#set_property PACKAGE_PIN A18 [get_ports RsTx]						
+	#set_property IOSTANDARD LVCMOS33 [get_ports RsTx]
+
+
+##USB HID (PS/2)
+#set_property PACKAGE_PIN C17 [get_ports PS2Clk]						
+	#set_property IOSTANDARD LVCMOS33 [get_ports PS2Clk]
+	#set_property PULLUP true [get_ports PS2Clk]
+#set_property PACKAGE_PIN B17 [get_ports PS2Data]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports PS2Data]	
+	#set_property PULLUP true [get_ports PS2Data]
+
+
+##Quad SPI Flash
+##Note that CCLK_0 cannot be placed in 7 series devices. You can access it using the
+##STARTUPE2 primitive.
+#set_property PACKAGE_PIN D18 [get_ports {QspiDB[0]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {QspiDB[0]}]
+#set_property PACKAGE_PIN D19 [get_ports {QspiDB[1]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {QspiDB[1]}]
+#set_property PACKAGE_PIN G18 [get_ports {QspiDB[2]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {QspiDB[2]}]
+#set_property PACKAGE_PIN F18 [get_ports {QspiDB[3]}]				
+	#set_property IOSTANDARD LVCMOS33 [get_ports {QspiDB[3]}]
+#set_property PACKAGE_PIN K19 [get_ports QspiCSn]					
+	#set_property IOSTANDARD LVCMOS33 [get_ports QspiCSn]
