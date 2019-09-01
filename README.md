@@ -54,4 +54,4 @@ which digit is on.
 
 Made for CS223 Project in Bilkent University
 
-![Alt text](/C:\Users\Aylin\Desktop\MyNotes\cs223spring\Yeni klasör\BLOCKdiagram.png)
+Written in System Verilog
